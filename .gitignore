@@ -13,3 +13,9 @@ build/
 轨迹/
 录屏/
 视频/
+
+# 台面复核系统：编译产物与本地数据
+countertop-app
+*.db
+*.db-journal
+uploads/
