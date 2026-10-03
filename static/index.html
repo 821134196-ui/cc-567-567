@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>厨房台面开孔复核系统</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ============ 登录页 ============ -->
+  <div v-if="!user" class="login-page">
+    <div class="login-card">
+      <h1>厨房台面开孔复核系统</h1>
+      <p class="muted">测量 · 确认 · 加工 · 安装 · 返工 全流程留痕</p>
+      <div class="account-grid">
+        <button v-for="u in demoUsers" :key="u.id" class="account-btn"
+                :class="{active: loginForm.username === u.username}"
+                @click="loginForm.username = u.username">
+          <span class="account-name">{{ u.name }}</span>
+          <span class="account-role" :data-role="u.role">{{ roleLabel(u.role) }}</span>
+          <span class="account-username">{{ u.username }}</span>
+        </button>
+      </div>
+      <div class="form-row">
+        <label>密码</label>
+        <input type="password" v-model="loginForm.password" placeholder="演示账号密码均为 123456"
+               @keyup.enter="login">
+      </div>
+      <div v-if="loginError" class="error-banner">{{ loginError }}</div>
+      <button class="btn primary block" @click="login" :disabled="!loginForm.username">登 录</button>
+    </div>
+  </div>
+
+  <!-- ============ 主界面 ============ -->
+  <div v-else>
+    <header class="topbar">
+      <div class="brand">厨房台面开孔复核系统</div>
+      <div class="user-info">
+        <span class="role-tag" :data-role="user.role">{{ roleLabel(user.role) }}</span>
+        <span>{{ user.name }}</span>
+        <button class="btn link" @click="logout">退出</button>
+      </div>
+    </header>
+
+    <!-- 订单列表 -->
+    <main v-if="!detail" class="page">
+      <div class="page-head">
+        <h2>订单列表</h2>
+        <button v-if="is('surveyor')" class="btn primary" @click="openNewOrder">＋ 新建订单（录入初测）</button>
+      </div>
+      <table class="table">
+        <thead>
+        <tr>
+          <th>订单号</th><th>客户</th><th>地址</th><th>状态</th>
+          <th>当前图纸</th><th>加工版本</th><th>创建时间</th><th></th>
+        </tr>
+        </thead>
+        <tbody>
+        <tr v-for="o in orders" :key="o.id">
+          <td class="mono">{{ o.orderNo }}</td>
+          <td>{{ o.customerName }}</td>
+          <td class="muted">{{ o.address }}</td>
+          <td><span class="badge" :data-status="o.status">{{ orderStatusLabel(o.status) }}</span></td>
+          <td>{{ o.currentVersion ? 'v' + o.currentVersion : '—' }}</td>
+          <td>{{ o.fabricatedVersion ? 'v' + o.fabricatedVersion : '—' }}</td>
+          <td class="muted">{{ fmtTime(o.createdAt) }}</td>
+          <td><button class="btn small" @click="openOrder(o.id)">查看</button></td>
+        </tr>
+        </tbody>
+      </table>
+    </main>
+
+    <!-- 订单详情 -->
+    <main v-else class="page">
+      <div class="page-head">
+        <div>
+          <button class="btn link" @click="backToList">← 返回列表</button>
+          <h2 class="inline">{{ detail.order.orderNo }}</h2>
+          <span class="badge big" :data-status="detail.order.status">{{ orderStatusLabel(detail.order.status) }}</span>
+        </div>
+        <button class="btn" @click="reload">刷新</button>
+      </div>
+      <p class="muted">客户：{{ detail.order.customerName }} ｜ 地址：{{ detail.order.address }}</p>
+
+      <div v-if="versionWarning" class="warn-banner">⚠ {{ versionWarning }}</div>
+
+      <nav class="tabs">
+        <button v-for="t in tabs" :key="t.key" :class="{active: tab === t.key}" @click="tab = t.key">{{ t.label }}</button>
+      </nav>
+
+      <!-- ===== 图纸版本 ===== -->
+      <section v-if="tab === 'drawings'">
+        <div class="section-head" v-if="is('surveyor') && detail.order.status !== 'completed'">
+          <button class="btn" @click="createNewVersion" :disabled="!!draftDrawing"
+                  :title="draftDrawing ? '已有草稿版本' : '基于最新版本创建新图纸'">＋ 图纸换版</button>
+          <span v-if="draftDrawing" class="muted">存在草稿 v{{ draftDrawing.version }}，请先提交或修改</span>
+        </div>
+
+        <div v-for="d in detail.drawings" :key="d.id" class="card">
+          <div class="card-head">
+            <strong>图纸 v{{ d.version }}</strong>
+            <span class="badge" :data-status="d.status">{{ drawingStatusLabel(d.status) }}</span>
+            <span v-if="detail.fabrication && detail.fabrication.drawingId === d.id" class="badge tag-fab">加工版本</span>
+            <span v-if="detail.order.currentDrawingId === d.id" class="badge tag-current">当前生效</span>
+            <span class="muted grow">{{ d.note }}</span>
+            <span class="muted">{{ d.createdBy }} · {{ fmtTime(d.createdAt) }}</span>
+          </div>
+          <div v-if="d.confirmedBy" class="muted small-text">客户 {{ d.confirmedBy }} 签字确认于 {{ fmtTime(d.confirmedAt) }}</div>
+
+          <table class="table">
+            <thead>
+            <tr><th>开孔</th><th>型号</th><th>位置 X (mm)</th><th>位置 Y (mm)</th><th>长 (mm)</th><th>宽 (mm)</th><th>测量图片</th><th v-if="is('surveyor') && d.status === 'draft'">操作</th></tr>
+            </thead>
+            <tbody>
+            <template v-for="ct in d.cutouts" :key="ct.id">
+              <tr>
+                <td>{{ kindLabel(ct.kind) }}</td>
+                <td>{{ ct.model }}</td>
+                <td>{{ fmtN(ct.posX) }}</td>
+                <td>{{ fmtN(ct.posY) }}</td>
+                <td>{{ fmtN(ct.width) }}</td>
+                <td>{{ fmtN(ct.height) }}</td>
+                <td>
+                  <span v-for="img in ct.images" :key="img.id">
+                    <a :href="img.filePath" target="_blank"><img :src="img.filePath" class="thumb" alt="测量图片"></a>
+                  </span>
+                  <label v-if="is('surveyor') && (d.status === 'draft' || d.status === 'pending')" class="btn small link">
+                    上传<input type="file" accept="image/*" hidden @change="uploadImage(ct, $event)">
+                  </label>
+                </td>
+                <td v-if="is('surveyor') && d.status === 'draft'">
+                  <button class="btn small" @click="openRemeasure(ct)">重新测量</button>
+                  <button class="btn small danger" @click="removeCutout(ct)">删除</button>
+                </td>
+              </tr>
+              <tr v-for="rm in remeasuresOf(ct.id)" :key="'rm' + rm.id" class="remeasure-row">
+                <td colspan="8">
+                  ↳ 复测：{{ fmtN(rm.oldPosX) }},{{ fmtN(rm.oldPosY) }},{{ fmtN(rm.oldWidth) }}×{{ fmtN(rm.oldHeight) }}
+                  → {{ fmtN(rm.newPosX) }},{{ fmtN(rm.newPosY) }},{{ fmtN(rm.newWidth) }}×{{ fmtN(rm.newHeight) }}
+                  ｜原因：{{ rm.reason }} ｜ {{ rm.createdBy }} · {{ fmtTime(rm.createdAt) }}
+                </td>
+              </tr>
+            </template>
+            <tr v-if="!d.cutouts || d.cutouts.length === 0"><td colspan="8" class="muted">暂无开孔</td></tr>
+            </tbody>
+          </table>
+
+          <div class="card-actions">
+            <template v-if="is('surveyor') && d.status === 'draft'">
+              <button class="btn small" @click="openAddCutout(d)">＋ 添加开孔</button>
+              <button class="btn primary small" @click="submitDrawing(d)" :disabled="!d.cutouts || d.cutouts.length === 0">提交客户确认</button>
+            </template>
+            <button v-if="is('customer') && d.status === 'pending' && detail.order.customerUserId === user.id"
+                    class="btn primary small" @click="openConfirm(d)">签字确认此版本</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== 加工记录 ===== -->
+      <section v-if="tab === 'fabrication'">
+        <div v-if="detail.fabrication" class="card">
+          <div class="card-head">
+            <strong>加工记录</strong>
+            <span class="badge tag-fab">按图纸 v{{ detail.fabrication.drawingVersion }} 加工（已锁定）</span>
+            <span class="muted grow"></span>
+            <span class="muted">{{ detail.fabrication.processedBy }} · {{ fmtTime(detail.fabrication.createdAt) }}</span>
+          </div>
+          <p v-if="detail.fabrication.note" class="muted">备注：{{ detail.fabrication.note }}</p>
+          <table class="table">
+            <thead><tr><th>开孔</th><th>实际 X</th><th>实际 Y</th><th>实际长</th><th>实际宽</th></tr></thead>
+            <tbody>
+            <tr v-for="a in detail.fabrication.actuals" :key="a.id">
+              <td>{{ a.label }}</td><td>{{ fmtN(a.posX) }}</td><td>{{ fmtN(a.posY) }}</td>
+              <td>{{ fmtN(a.width) }}</td><td>{{ fmtN(a.height) }}</td>
+            </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="card">
+          <p v-if="detail.order.status === 'pending_confirm'" class="warn-text">图纸已提交，客户尚未确认，工厂不能加工。</p>
+          <p v-else-if="detail.order.status === 'measuring'" class="muted">测量中，图纸尚未提交客户确认。</p>
+          <template v-if="is('factory') && detail.order.status === 'confirmed'">
+            <p>客户已确认图纸 v{{ currentVersion }}，请按确认尺寸录入实际开孔：</p>
+            <button class="btn primary" @click="openFabricate">开始加工（录入实际尺寸）</button>
+          </template>
+          <p v-if="!is('factory') && detail.order.status === 'confirmed'" class="muted">待工厂加工。</p>
+        </div>
+      </section>
+
+      <!-- ===== 安装复核 ===== -->
+      <section v-if="tab === 'install'">
+        <div class="card">
+          <div class="card-head">
+            <strong>尺寸三方对比</strong>
+            <span class="muted">基准：图纸 v{{ detail.comparison.baselineVersion }}（{{ detail.fabrication ? '加工锁定版本' : '当前生效版本' }}）</span>
+            <span class="muted grow"></span>
+            <span class="muted">公差 ±{{ detail.comparison.tolerance }}mm</span>
+          </div>
+          <table class="table compare">
+            <thead>
+            <tr>
+              <th>开孔</th>
+              <th>确认尺寸<br><span class="muted">X / Y / 长×宽</span></th>
+              <th>实际开孔</th><th>偏差</th>
+              <th>现场测量（最新）</th><th>偏差</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr v-for="row in detail.comparison.rows" :key="row.cutoutId" :class="{'row-bad': row.exceeded}">
+              <td>{{ row.label }} <span v-if="row.exceeded" class="badge tag-bad">超差</span></td>
+              <td class="mono">{{ dims(row.confirmed) }}</td>
+              <td class="mono">{{ row.actual ? dims(row.actual) : '—' }}</td>
+              <td><dev-cells :dev="row.actualDev"></dev-cells></td>
+              <td class="mono">{{ row.field ? dims(row.field) : '—' }}</td>
+              <td><dev-cells :dev="row.fieldDev"></dev-cells></td>
+            </tr>
+            </tbody>
+          </table>
+          <div v-if="detail.comparison.unresolvedDeviation" class="warn-banner">
+            ⚠ 存在超差开孔，需先提出返工/变更方案，经客户确认并执行完成后才能验收。
+          </div>
+          <div v-if="is('installer') && canFieldWork" class="card-actions">
+            <button class="btn" @click="openFieldMeasure">录入现场测量</button>
+            <button class="btn warn" @click="openPlan">提出返工/变更方案</button>
+            <button class="btn primary" @click="completeOrder">完成安装验收</button>
+          </div>
+        </div>
+
+        <div class="card" v-if="detail.fieldMeasurement.length">
+          <div class="card-head"><strong>现场测量记录</strong></div>
+          <table class="table">
+            <thead><tr><th>开孔</th><th>X</th><th>Y</th><th>长</th><th>宽</th><th>备注</th><th>测量人</th><th>时间</th></tr></thead>
+            <tbody>
+            <tr v-for="f in detail.fieldMeasurement" :key="f.id">
+              <td>{{ f.label }}</td><td>{{ fmtN(f.posX) }}</td><td>{{ fmtN(f.posY) }}</td>
+              <td>{{ fmtN(f.width) }}</td><td>{{ fmtN(f.height) }}</td>
+              <td class="muted">{{ f.note }}</td><td>{{ f.measuredBy }}</td><td class="muted">{{ fmtTime(f.createdAt) }}</td>
+            </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== 返工与变更 ===== -->
+      <section v-if="tab === 'plans'">
+        <div v-if="!detail.reworkPlans.length" class="card muted">暂无返工/变更方案</div>
+        <div v-for="p in detail.reworkPlans" :key="p.id" class="card">
+          <div class="card-head">
+            <span class="badge" :data-type="p.type">{{ p.type === 'rework' ? '返工' : '变更' }}</span>
+            <strong>{{ p.cutoutLabel }}</strong>
+            <span class="badge" :data-status="p.status">{{ planStatusLabel(p.status) }}</span>
+            <span class="grow"></span>
+            <span class="muted">{{ p.proposedBy }} 提出 · {{ fmtTime(p.createdAt) }}</span>
+          </div>
+          <p>{{ p.description }}</p>
+          <p class="mono">费用：{{ fmtN(p.cost) }} 元 ｜ 责任方：{{ roleLabel(p.responsibleParty) }}</p>
+          <p v-if="p.decidedBy" class="muted small-text">
+            {{ p.decidedBy }} {{ p.status === 'rejected' ? '拒绝' : '批准' }}于 {{ fmtTime(p.decidedAt) }}
+            <template v-if="p.completedBy">｜ {{ p.completedBy }} 执行完成于 {{ fmtTime(p.completedAt) }}</template>
+          </p>
+          <div class="card-actions">
+            <template v-if="is('customer') && p.status === 'pending' && detail.order.customerUserId === user.id">
+              <button class="btn primary small" @click="decidePlan(p, true)">批准</button>
+              <button class="btn danger small" @click="decidePlan(p, false)">拒绝</button>
+            </template>
+            <button v-if="is('installer') && p.status === 'approved'" class="btn primary small" @click="completePlan(p)">标记返工完成</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== 日志 ===== -->
+      <section v-if="tab === 'logs'">
+        <div class="card">
+          <div class="card-head"><strong>客户确认记录</strong></div>
+          <table class="table">
+            <thead><tr><th>图纸版本</th><th>客户</th><th>签名</th><th>时间</th></tr></thead>
+            <tbody>
+            <tr v-for="cf in detail.confirmations" :key="cf.id">
+              <td>v{{ cf.version }}</td><td>{{ cf.customer }}</td><td class="signature">{{ cf.signature }}</td>
+              <td class="muted">{{ fmtTime(cf.createdAt) }}</td>
+            </tr>
+            <tr v-if="!detail.confirmations.length"><td colspan="4" class="muted">暂无确认记录</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <div class="card-head"><strong>操作日志</strong></div>
+          <ul class="timeline">
+            <li v-for="log in detail.auditLogs" :key="log.id">
+              <span class="mono muted">{{ fmtTime(log.createdAt) }}</span>
+              <strong>{{ log.actor }}</strong>
+              <span class="badge tag-action">{{ log.action }}</span>
+              <span>{{ log.detail }}</span>
+            </li>
+          </ul>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ============ 模态框 ============ -->
+  <div v-if="modal" class="modal-mask" @click.self="modal = ''">
+    <div class="modal">
+
+      <!-- 新建订单 -->
+      <template v-if="modal === 'newOrder'">
+        <h3>新建订单（测量员录入初测）</h3>
+        <div class="form-row"><label>客户姓名</label><input v-model="newOrder.customerName"></div>
+        <div class="form-row"><label>客户账号</label>
+          <select v-model="newOrder.customerUserId">
+            <option value="" disabled>选择客户账号</option>
+            <option v-for="cu in customers" :key="cu.id" :value="cu.id">{{ cu.name }}（{{ cu.username }}）</option>
+          </select>
+        </div>
+        <div class="form-row"><label>安装地址</label><input v-model="newOrder.address"></div>
+        <h4>开孔（水槽/灶具）</h4>
+        <div v-for="(ct, i) in newOrder.cutouts" :key="i" class="cutout-form">
+          <select v-model="ct.kind"><option value="sink">水槽</option><option value="cooktop">灶具</option></select>
+          <input v-model="ct.model" placeholder="型号" class="w-model">
+          <input v-model.number="ct.posX" type="number" placeholder="X mm">
+          <input v-model.number="ct.posY" type="number" placeholder="Y mm">
+          <input v-model.number="ct.width" type="number" placeholder="长 mm">
+          <input v-model.number="ct.height" type="number" placeholder="宽 mm">
+          <button class="btn small danger" @click="newOrder.cutouts.splice(i, 1)">删</button>
+        </div>
+        <button class="btn small" @click="newOrder.cutouts.push({kind: 'sink', model: '', posX: 0, posY: 0, width: 0, height: 0})">＋ 添加开孔</button>
+        <div class="modal-actions">
+          <button class="btn" @click="modal = ''">取消</button>
+          <button class="btn primary" @click="createOrder">创建</button>
+        </div>
+      </template>
+
+      <!-- 添加开孔 -->
+      <template v-if="modal === 'addCutout'">
+        <h3>添加开孔（图纸 v{{ activeDrawing && activeDrawing.version }}）</h3>
+        <div class="cutout-form">
+          <select v-model="newCutout.kind"><option value="sink">水槽</option><option value="cooktop">灶具</option></select>
+          <input v-model="newCutout.model" placeholder="型号" class="w-model">
+          <input v-model.number="newCutout.posX" type="number" placeholder="X mm">
+          <input v-model.number="newCutout.posY" type="number" placeholder="Y mm">
+          <input v-model.number="newCutout.width" type="number" placeholder="长 mm">
+          <input v-model.number="newCutout.height" type="number" placeholder="宽 mm">
+        </div>
+        <div class="modal-actions">
+          <button class="btn" @click="modal = ''">取消</button>
+          <button class="btn primary" @click="addCutout">添加</button>
+        </div>
+      </template>
+
+      <!-- 重新测量 -->
+      <template v-if="modal === 'remeasure'">
+        <h3>重新测量：{{ remeasureForm.cutout && kindLabel(remeasureForm.cutout.kind) }}</h3>
+        <p class="muted">原值：X {{ fmtN(remeasureForm.cutout.posX) }} / Y {{ fmtN(remeasureForm.cutout.posY) }} / {{ fmtN(remeasureForm.cutout.width) }}×{{ fmtN(remeasureForm.cutout.height) }} mm</p>
+        <div class="form-row"><label>型号</label><input v-model="remeasureForm.model"></div>
+        <div class="cutout-form">
+          <input v-model.number="remeasureForm.posX" type="number" placeholder="X mm">
+          <input v-model.number="remeasureForm.posY" type="number" placeholder="Y mm">
+          <input v-model.number="remeasureForm.width" type="number" placeholder="长 mm">
+          <input v-model.number="remeasureForm.height" type="number" placeholder="宽 mm">
+        </div>
+        <div class="form-row"><label>复测原因（必填）</label><input v-model="remeasureForm.reason" placeholder="例如：首次卷尺读数误差"></div>
+        <div class="modal-actions">
+          <button class="btn" @click="modal = ''">取消</button>
+          <button class="btn primary" @click="submitRemeasure">保存复测</button>
+        </div>
+      </template>
+
+      <!-- 客户签字确认 -->
+      <template v-if="modal === 'confirm'">
+        <h3>签字确认图纸 v{{ confirmForm.drawing && confirmForm.drawing.version }}</h3>
+        <p class="muted">确认后工厂将按此版本尺寸加工；若台面已加工，新版本不会自动套用。</p>
+        <div class="form-row"><label>签名</label><input v-model="confirmForm.signature" placeholder="请输入您的姓名作为签名"></div>
+        <div class="modal-actions">
+          <button class="btn" @click="modal = ''">取消</button>
+          <button class="btn primary" @click="confirmDrawing">确认</button>
+        </div>
+      </template>
+
+      <!-- 加工 -->
+      <template v-if="modal === 'fabricate'">
+        <h3>按图纸 v{{ currentVersion }} 加工 — 录入实际开孔尺寸</h3>
+        <div v-for="a in fabForm.actuals" :key="a.cutoutId" class="cutout-form">
+          <span class="w-model">{{ a.label }}</span>
+          <input v-model.number="a.posX" type="number" placeholder="实际 X">
+          <input v-model.number="a.posY" type="number" placeholder="实际 Y">
+          <input v-model.number="a.width" type="number" placeholder="实际长">
+          <input v-model.number="a.height" type="number" placeholder="实际宽">
+        </div>
+        <div class="form-row"><label>备注</label><input v-model="fabForm.note"></div>
+        <div class="modal-actions">
+          <button class="btn" @click="modal = ''">取消</button>
+          <button class="btn primary" @click="submitFabricate">完成加工</button>
+        </div>
+      </template>
+
+      <!-- 现场测量 -->
+      <template v-if="modal === 'fieldMeasure'">
+        <h3>录入现场测量</h3>
+        <div class="form-row"><label>开孔</label>
+          <select v-model="fieldForm.cutoutId" @change="prefillField">
+            <option v-for="row in detail.comparison.rows" :key="row.cutoutId" :value="row.cutoutId">{{ row.label }}</option>
+          </select>
+        </div>
+        <div class="cutout-form">
+          <input v-model.number="fieldForm.posX" type="number" placeholder="X mm">
+          <input v-model.number="fieldForm.posY" type="number" placeholder="Y mm">
+          <input v-model.number="fieldForm.width" type="number" placeholder="长 mm">
+          <input v-model.number="fieldForm.height" type="number" placeholder="宽 mm">
+        </div>
+        <div class="form-row"><label>备注</label><input v-model="fieldForm.note"></div>
+        <div class="modal-actions">
+          <button class="btn" @click="modal = ''">取消</button>
+          <button class="btn primary" @click="submitFieldMeasure">保存</button>
+        </div>
+      </template>
+
+      <!-- 返工/变更方案 -->
+      <template v-if="modal === 'plan'">
+        <h3>提出返工/变更方案</h3>
+        <div class="form-row"><label>开孔</label>
+          <select v-model="planForm.cutoutId">
+            <option v-for="row in detail.comparison.rows" :key="row.cutoutId" :value="row.cutoutId">{{ row.label }}</option>
+          </select>
+        </div>
+        <div class="form-row"><label>类型</label>
+          <select v-model="planForm.type"><option value="rework">返工</option><option value="change">变更</option></select>
+        </div>
+        <div class="form-row"><label>方案说明</label><textarea v-model="planForm.description" rows="3"></textarea></div>
+        <div class="form-row"><label>费用（元）</label><input v-model.number="planForm.cost" type="number" min="0"></div>
+        <div class="form-row"><label>责任方</label>
+          <select v-model="planForm.responsibleParty">
+            <option value="factory">工厂</option><option value="surveyor">测量员</option>
+            <option value="installer">安装员</option><option value="customer">客户</option>
+          </select>
+        </div>
+        <p class="muted">方案需客户确认后才能执行。</p>
+        <div class="modal-actions">
+          <button class="btn" @click="modal = ''">取消</button>
+          <button class="btn primary" @click="submitPlan">提交方案</button>
+        </div>
+      </template>
+
+    </div>
+  </div>
+
+  <div v-if="toast" class="toast" :class="toastType">{{ toast }}</div>
+</div>
+
+<script src="/static/vue.global.prod.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

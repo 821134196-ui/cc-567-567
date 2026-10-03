@@ -13,3 +13,9 @@ build/
 轨迹/
 录屏/
 视频/
+
+# 项目产物
+countertop
+countertop.db
+uploads/
+!uploads/.gitkeep
